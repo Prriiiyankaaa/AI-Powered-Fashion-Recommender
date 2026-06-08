@@ -9,6 +9,14 @@ Built with a fine-tuned BERT model for intent extraction and CLIP-based visual s
 
 ---
 
+## Demo
+
+| Style Input | Style Profile |
+|---|---|
+| App UI | <img width="1440" height="900" alt="Screenshot 2026-06-07 at 4 42 06 PM" src="https://github.com/user-attachments/assets/08da30ba-21c3-4b67-bbe2-51fa8a2b11ab" />
+ | Recommendations | <img width="1440" height="900" alt="Screenshot 2026-06-07 at 4 42 27 PM" src="https://github.com/user-attachments/assets/31bfb080-76cf-4cc7-a184-bdd8eb01546c" />
+ |
+
 ## How It Works
 
 A user types a prompt in plain English. The system runs it through a 4-head BERT classifier that predicts **intent across four dimensions** — not just what item they want, but the social context they're dressing for. Those predicted labels are then used to score a product catalog that's been pre-embedded with CLIP, and the top matches are surfaced with explainable per-dimension scores.
