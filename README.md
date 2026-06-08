@@ -15,7 +15,6 @@ Built with a fine-tuned BERT model for intent extraction and CLIP-based visual s
 |---|---|
 | App UI | <img width="1440" height="900" alt="Screenshot 2026-06-07 at 4 42 06 PM" src="https://github.com/user-attachments/assets/08da30ba-21c3-4b67-bbe2-51fa8a2b11ab" />
  | Recommendations | <img width="1440" height="900" alt="Screenshot 2026-06-07 at 4 42 27 PM" src="https://github.com/user-attachments/assets/31bfb080-76cf-4cc7-a184-bdd8eb01546c" />
- |
 
 ## How It Works
 
