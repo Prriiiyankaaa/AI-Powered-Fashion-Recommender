@@ -141,9 +141,6 @@ The system handles a wide variety of natural language inputs:
 "job interview tomorrow, need to look professional"
 → occasion: office | formality: formal | constraint: understated | color: neutral
 
-"my ex will be there, I need to look amazing"
-→ occasion: party | formality: semi-formal | constraint: bold | color: bright
-
 "beach vacation with my girls, something fun and colorful"
 → occasion: casual | formality: casual | constraint: bold | color: bright
 
