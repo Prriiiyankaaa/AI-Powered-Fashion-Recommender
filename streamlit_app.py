@@ -1,13 +1,18 @@
 import streamlit as st
 import os
 import json
+import urllib.request
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from transformers import BertModel, BertTokenizer
+from transformers import BertConfig, BertModel, BertTokenizer
 import chromadb
+from chromadb.config import Settings
 from pathlib import Path
+
+# Stop ChromaDB from phoning home (noisy / occasionally fatal on cloud hosts)
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
 
 # ============================================================
 # Page Configuration
@@ -15,7 +20,7 @@ from pathlib import Path
 
 st.set_page_config(
     page_title="Fashion Recommender",
-    
+    page_icon="👗",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -26,9 +31,31 @@ st.set_page_config(
 
 BERT_MODEL_DIR = "./fashion-bert"
 CHROMA_DIR = "./chromadb_store"
+MODEL_PATH = os.path.join(BERT_MODEL_DIR, "model.pt")
 MAX_LEN = 64
 TOP_K = 5
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+# Build the BERT encoder from config instead of downloading `bert-base-uncased`
+# at boot: model.pt already contains every weight, so the pretrained download
+# is pure startup cost / a network dependency we don't need on Streamlit Cloud.
+USE_PRETRAINED_BASE = os.environ.get("USE_PRETRAINED_BASE", "0") == "1"
+
+
+def _get_secret(name: str, default: str = "") -> str:
+    """Read from st.secrets if a secrets file exists, else fall back to env."""
+    try:
+        if name in st.secrets:
+            return str(st.secrets[name])
+    except Exception:
+        pass
+    return os.environ.get(name, default)
+
+
+# Optional: host model.pt outside the repo (e.g. to avoid Git LFS bandwidth
+# limits). Set MODEL_URL in Streamlit "Secrets" to a direct-download link and
+# the app fetches it once into ./fashion-bert/ on first boot.
+MODEL_URL = _get_secret("MODEL_URL", "")
 
 WEIGHTS = {
     "occasion": 0.3,
@@ -47,6 +74,43 @@ def load_label_maps():
         label_maps = json.load(f)
     return label_maps
 
+
+def _is_real_weights(path: str) -> bool:
+    """True only if `path` is the actual checkpoint, not a missing/LFS-pointer stub."""
+    if not os.path.exists(path) or os.path.getsize(path) < 1_000_000:
+        return False
+    with open(path, "rb") as f:
+        head = f.read(64)
+    return not head.startswith(b"version https://git-lfs")
+
+
+def ensure_model_file():
+    """Make sure ./fashion-bert/model.pt is the real checkpoint, fetching MODEL_URL if not."""
+    if _is_real_weights(MODEL_PATH):
+        return
+    if not MODEL_URL:
+        st.error(
+            "Model weights `fashion-bert/model.pt` are missing or unresolved "
+            "(Git LFS not pulled?).\n\n"
+            "Set a `MODEL_URL` secret pointing at a direct download link, "
+            "or ensure Git LFS files are available to the deployment."
+        )
+        st.stop()
+    os.makedirs(BERT_MODEL_DIR, exist_ok=True)
+    with st.spinner("Downloading model weights (first run only)…"):
+        tmp = MODEL_PATH + ".part"
+        urllib.request.urlretrieve(MODEL_URL, tmp)
+        os.replace(tmp, MODEL_PATH)
+    if not _is_real_weights(MODEL_PATH):
+        st.error("Downloaded file from MODEL_URL does not look like a valid checkpoint.")
+        st.stop()
+
+
+for _required in (BERT_MODEL_DIR, CHROMA_DIR):
+    if not os.path.exists(_required):
+        st.error(f"Required path `{_required}` is missing from the deployment.")
+        st.stop()
+
 LABEL_MAPS = load_label_maps()
 
 REVERSE_MAPS = {
@@ -61,7 +125,11 @@ REVERSE_MAPS = {
 class FashionIntentModel(nn.Module):
     def __init__(self):
         super().__init__()
-        self.bert = BertModel.from_pretrained("bert-base-uncased")
+        if USE_PRETRAINED_BASE:
+            self.bert = BertModel.from_pretrained("bert-base-uncased")
+        else:
+            # BertConfig() defaults == bert-base-uncased; weights come from model.pt
+            self.bert = BertModel(BertConfig())
         hidden = self.bert.config.hidden_size
 
         self.occasion_head = nn.Linear(hidden, len(LABEL_MAPS["occasion"]))
@@ -86,11 +154,16 @@ class FashionIntentModel(nn.Module):
 
 @st.cache_resource
 def load_bert():
+    ensure_model_file()
     tokenizer = BertTokenizer.from_pretrained(BERT_MODEL_DIR)
     model = FashionIntentModel().to(DEVICE)
-    model.load_state_dict(
-        torch.load(f"{BERT_MODEL_DIR}/model.pt", map_location=DEVICE)
-    )
+    state_dict = torch.load(MODEL_PATH, map_location=DEVICE)
+    # strict=False tolerates harmless buffer-key drift across transformers versions
+    # (e.g. embeddings.position_ids); real weights are all present in model.pt.
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    real_missing = [k for k in missing if "position_ids" not in k]
+    if real_missing:
+        st.warning(f"Model loaded with {len(real_missing)} missing weight(s): {real_missing[:5]}")
     model.eval()
     return model, tokenizer
 
@@ -182,9 +255,17 @@ def detect_item_type(prompt):
 # Query ChromaDB
 # ============================================================
 
+@st.cache_resource
+def get_chroma_collection():
+    client = chromadb.PersistentClient(
+        path=CHROMA_DIR,
+        settings=Settings(anonymized_telemetry=False),
+    )
+    return client.get_collection("fashion_products")
+
+
 def query_chromadb(intent, prompt="", top_k=TOP_K * 3):
-    client = chromadb.PersistentClient(path=CHROMA_DIR)
-    collection = client.get_collection("fashion_products")
+    collection = get_chroma_collection()
 
     total = collection.count()
     if total == 0:
@@ -383,7 +464,7 @@ if st.button("🔍 Get Recommendations", use_container_width=True, type="primary
                     with col1:
                         # Display image if available
                         if product["local_image_path"] and os.path.exists(product["local_image_path"]):
-                            st.image(product["local_image_path"], use_column_width=None)
+                            st.image(product["local_image_path"], use_container_width=True)
                         else:
                             st.info("No image available")
                     
@@ -403,7 +484,7 @@ if st.button("🔍 Get Recommendations", use_container_width=True, type="primary
                         
                         # Match score with progress bar
                         st.markdown("**Match Score**")
-                        st.progress(product["match_score"])
+                        st.progress(min(max(product["match_score"], 0.0), 1.0))
                         st.markdown(f"`{product['match_score']:.1%}`", unsafe_allow_html=True)
                         
                         # Detailed scores

@@ -1,12 +1,13 @@
-scikit-learn
-pandas
-numpy
-matplotlib
-seaborn
-transformers
-torch
-"accelerate>=1.1.0"
-chromadb
-openai-clip
-pillow
-streamlit
+# Install the CPU-only PyTorch build (Streamlit Community Cloud has no GPU and
+# the default CUDA wheels blow past the build/disk limits).
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+streamlit==1.57.0
+torch==2.12.0+cpu
+transformers==5.8.1
+tokenizers==0.22.2
+chromadb==1.5.9
+onnxruntime==1.26.0
+numpy==2.4.6
+pandas==3.0.3
+pillow==12.2.0
