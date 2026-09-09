@@ -37,16 +37,5 @@ wheels/
 .env
 .env.local
 
-# Large Data & Models
-chromadb_store/
-fashion-bert/
-product_images/
-*.csv
-data_cleaned.ipynb
-bert.ipynb
-product.ipynb
-recommender.ipynb
-tag.ipynb
-
 # Streamlit
 .streamlit/secrets.toml

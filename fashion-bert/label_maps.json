@@ -1,0 +1,1 @@
+{"occasion": {"casual": 0, "date": 1, "office": 2, "party": 3, "wedding": 4}, "formality": {"casual": 0, "formal": 1, "semi-formal": 2}, "constraint": {"bold": 0, "no_constraint": 1, "understated": 2}, "color_tone": {"bright": 0, "dark": 1, "neutral": 2, "soft": 3}}
