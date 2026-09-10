@@ -128,13 +128,11 @@ class FashionIntentModel(nn.Module):
 # Loss / eval
 # ------------------------------------------------------------------
 kl = nn.KLDivLoss(reduction="batchmean")
-
-
 def batch_loss(outputs, batch):
     loss = 0.0
-    for head, axis in HEAD_KEYS.items():
+    for head, axis in HEAD_KEYS.items():          # {"occasion":"occasion", ..., "color":"color_tone"}
         logp = F.log_softmax(outputs[head], dim=1)
-        loss = loss + kl(logp, batch[f"{axis}_target"].to(DEVICE))
+        loss = loss + kl(logp, batch[f"{axis}_target"].to(DEVICE))  # target is a distribution
     return loss
 
 
