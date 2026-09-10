@@ -11,6 +11,8 @@ import chromadb
 from chromadb.config import Settings
 from pathlib import Path
 
+import recommender_core as rc
+
 # Stop ChromaDB from phoning home (noisy / occasionally fatal on cloud hosts)
 os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
 
@@ -57,12 +59,8 @@ def _get_secret(name: str, default: str = "") -> str:
 # the app fetches it once into ./fashion-bert/ on first boot.
 MODEL_URL = _get_secret("MODEL_URL", "")
 
-WEIGHTS = {
-    "occasion": 0.3,
-    "formality": 0.30,
-    "constraint": 0.25,
-    "color_tone": 0.15,
-}
+# Ranking / retrieval knobs live in recommender_core; expose the defaults here.
+WEIGHTS = rc.WEIGHTS
 
 # ============================================================
 # Load Label Maps
@@ -99,10 +97,23 @@ def ensure_model_file():
     os.makedirs(BERT_MODEL_DIR, exist_ok=True)
     with st.spinner("Downloading model weights (first run only)…"):
         tmp = MODEL_PATH + ".part"
-        urllib.request.urlretrieve(MODEL_URL, tmp)
+        req = urllib.request.Request(MODEL_URL, headers={"User-Agent": "fashion-recommender"})
+        with urllib.request.urlopen(req) as resp, open(tmp, "wb") as out:
+            while True:
+                chunk = resp.read(1 << 20)
+                if not chunk:
+                    break
+                out.write(chunk)
         os.replace(tmp, MODEL_PATH)
     if not _is_real_weights(MODEL_PATH):
-        st.error("Downloaded file from MODEL_URL does not look like a valid checkpoint.")
+        try:
+            os.remove(MODEL_PATH)
+        except OSError:
+            pass
+        st.error(
+            "The file at MODEL_URL is not a valid checkpoint (got an HTML/error page?). "
+            "Use a *direct* download link, e.g. a Hugging Face `.../resolve/main/model.pt` URL."
+        )
         st.stop()
 
 
@@ -173,7 +184,13 @@ bert_model, tokenizer = load_bert()
 # Extract Intent
 # ============================================================
 
-def extract_intent(prompt, model, tokenizer):
+def extract_intent(prompt, model, tokenizer, temperature=rc.DEFAULT_TEMPERATURE):
+    """
+    Returns argmax labels (for display) plus the full softened distribution per
+    axis in `scores` — the distributions are what ranking actually uses.
+    A temperature > 1 keeps secondary intents ("...but a little casual") alive
+    instead of letting an over-confident softmax crush them to ~0.
+    """
     tokens = tokenizer(
         prompt,
         max_length=MAX_LEN,
@@ -188,10 +205,11 @@ def extract_intent(prompt, model, tokenizer):
     with torch.no_grad():
         outputs = model(input_ids, attention_mask)
 
-    occ_scores = outputs["occasion"].softmax(dim=1).cpu().tolist()[0]
-    form_scores = outputs["formality"].softmax(dim=1).cpu().tolist()[0]
-    con_scores = outputs["constraint"].softmax(dim=1).cpu().tolist()[0]
-    col_scores = outputs["color"].softmax(dim=1).cpu().tolist()[0]
+    t = max(float(temperature), 1e-6)
+    occ_scores = (outputs["occasion"] / t).softmax(dim=1).cpu().tolist()[0]
+    form_scores = (outputs["formality"] / t).softmax(dim=1).cpu().tolist()[0]
+    con_scores = (outputs["constraint"] / t).softmax(dim=1).cpu().tolist()[0]
+    col_scores = (outputs["color"] / t).softmax(dim=1).cpu().tolist()[0]
 
     return {
         "occasion": REVERSE_MAPS["occasion"][int(np.argmax(occ_scores))],
@@ -264,22 +282,20 @@ def get_chroma_collection():
     return client.get_collection("fashion_products")
 
 
-def query_chromadb(intent, prompt="", top_k=TOP_K * 3):
+def query_chromadb(intent, prompt="", n_candidates=TOP_K * 4):
     collection = get_chroma_collection()
 
     total = collection.count()
     if total == 0:
         return []
 
-    item_type = detect_item_type(prompt)
-    if item_type:
-        query_text = f"{item_type} {intent['occasion']} {intent['formality']}"
-    else:
-        query_text = f"{intent['occasion']} {intent['formality']} {intent['constraint']} outfit"
+    query_text = rc.build_query_text(
+        intent["scores"], REVERSE_MAPS, prompt, detect_item_type(prompt)
+    )
 
     results = collection.query(
         query_texts=[query_text],
-        n_results=min(top_k, total),
+        n_results=min(n_candidates, total),
     )
 
     products = []
@@ -322,91 +338,35 @@ def filter_by_item_type(prompt, candidates):
 # Score and Rank
 # ============================================================
 
-OCCASION_LABEL_MAP = {
-    "casual": "casual everyday wear",
-    "party": "party outfit",
-    "wedding": "wedding guest outfit",
-    "office": "office wear",
-    "date": "date night outfit",
-}
+# Scoring / ranking now live in recommender_core (target-profile matching).
+OCCASION_LABEL_MAP = rc.OCCASION_LABEL_MAP
+FORMALITY_LABEL_MAP = rc.FORMALITY_LABEL_MAP
+BOLDNESS_LABEL_MAP = rc.BOLDNESS_LABEL_MAP
+COLOR_LABEL_MAP = rc.COLOR_LABEL_MAP
 
-FORMALITY_LABEL_MAP = {
-    "formal": "very formal outfit",
-    "semi-formal": "semi formal outfit",
-    "casual": "casual informal outfit",
-}
 
-BOLDNESS_LABEL_MAP = {
-    "understated": "subtle and understated outfit",
-    "bold": "bold and loud statement outfit",
-    "no_constraint": None,
-}
-
-COLOR_LABEL_MAP = {
-    "soft": "soft muted pastel colors",
-    "bright": "bright bold colors",
-    "dark": "dark moody colors",
-    "neutral": "neutral minimal colors",
-}
-
-def score_product(product, intent):
-    score = 0.0
-    score_details = {}
-
-    # Occasion
-    occ_label = OCCASION_LABEL_MAP.get(intent["occasion"], "")
-    occ_match = product["occasion_scores"].get(occ_label, 0.0)
-    occ_contrib = occ_match * WEIGHTS["occasion"]
-    score += occ_contrib
-    score_details["occasion"] = round(occ_contrib, 3)
-
-    # Formality
-    form_label = FORMALITY_LABEL_MAP.get(intent["formality"], "")
-    form_match = product["formality_scores"].get(form_label, 0.0)
-    form_contrib = form_match * WEIGHTS["formality"]
-    score += form_contrib
-    score_details["formality"] = round(form_contrib, 3)
-
-    # Constraint
-    con_label = BOLDNESS_LABEL_MAP.get(intent["constraint"])
-    if con_label is None:
-        con_match = 0.5
-    else:
-        con_match = product["boldness_scores"].get(con_label, 0.0)
-    con_contrib = con_match * WEIGHTS["constraint"]
-    score += con_contrib
-    score_details["constraint"] = round(con_contrib, 3)
-
-    # Color
-    col_label = COLOR_LABEL_MAP.get(intent["color_tone"], "")
-    col_match = product["color_scores"].get(col_label, 0.0)
-    col_contrib = col_match * WEIGHTS["color_tone"]
-    score += col_contrib
-    score_details["color_tone"] = round(col_contrib, 3)
-
-    return round(score, 4), score_details
-
-def rank_products(products, intent, top_k=TOP_K):
-    scored = []
-    for product in products:
-        score, details = score_product(product, intent)
-        scored.append({**product, "match_score": score, "score_details": details})
-    scored.sort(key=lambda x: x["match_score"], reverse=True)
-    return scored[:top_k]
+def rank_products(products, intent, top_k=TOP_K, alpha=rc.DEFAULT_ALPHA,
+                  mmr_lambda=rc.DEFAULT_MMR):
+    return rc.rank_products(
+        products, intent["scores"], REVERSE_MAPS,
+        top_k=top_k, alpha=alpha, mmr_lambda=mmr_lambda,
+    )
 
 # ============================================================
 # Recommend Function
 # ============================================================
 
-def recommend(prompt, top_k=TOP_K):
-    intent = extract_intent(prompt, bert_model, tokenizer)
-    candidates = query_chromadb(intent, prompt, top_k=top_k * 3)
+def recommend(prompt, top_k=TOP_K, temperature=rc.DEFAULT_TEMPERATURE,
+              alpha=rc.DEFAULT_ALPHA, mmr_lambda=rc.DEFAULT_MMR):
+    intent = extract_intent(prompt, bert_model, tokenizer, temperature=temperature)
+    candidates = query_chromadb(intent, prompt, n_candidates=max(top_k * 4, 20))
     if not candidates:
         return None, None
 
     candidates = filter_by_item_type(prompt, candidates)
-    ranked = rank_products(candidates, intent, top_k=top_k)
-    
+    ranked = rank_products(candidates, intent, top_k=top_k, alpha=alpha,
+                           mmr_lambda=mmr_lambda)
+
     return intent, ranked
 
 # ============================================================
@@ -420,6 +380,23 @@ st.markdown("Find your perfect outfit based on your style, occasion, and prefere
 with st.sidebar:
     st.header("Settings")
     top_k = st.slider("Number of recommendations", 1, 10, 5)
+
+    with st.expander("Advanced tuning"):
+        temperature = st.slider(
+            "Nuance", 1.0, 3.5, float(rc.DEFAULT_TEMPERATURE), 0.5,
+            help="Higher = take secondary intents (\"…but a little casual\") more seriously.",
+        )
+        target_match = st.slider(
+            "Match the exact blend", 0.0, 1.0, float(rc.DEFAULT_ALPHA), 0.05,
+            help="1.0 = rank purely by closeness to your profile. "
+                 "0.0 = rank by raw strength on your top label (old behaviour).",
+        )
+        variety = st.slider(
+            "Result variety", 0.0, 0.6, round(1.0 - float(rc.DEFAULT_MMR), 2), 0.05,
+            help="Higher spreads picks apart so the top results aren't near-duplicates.",
+        )
+    mmr_lambda = 1.0 - variety
+
     st.divider()
     st.info("🤖 Powered by BERT intent extraction and ChromaDB semantic search")
 
@@ -435,22 +412,36 @@ user_prompt = st.text_area(
 if st.button("🔍 Get Recommendations", use_container_width=True, type="primary"):
     if user_prompt.strip():
         with st.spinner("Analyzing your style preferences..."):
-            intent, ranked_products = recommend(user_prompt, top_k=top_k)
+            intent, ranked_products = recommend(
+                user_prompt, top_k=top_k, temperature=temperature,
+                alpha=target_match, mmr_lambda=mmr_lambda,
+            )
 
         if intent is None:
             st.error("No products found. Please try a different prompt.")
         else:
+            def _blend_caption(axis):
+                dist = intent["scores"][axis]
+                order = sorted(range(len(dist)), key=lambda i: dist[i], reverse=True)
+                bits = [
+                    f"{REVERSE_MAPS[axis][i].replace('_', ' ')} {dist[i]:.0%}"
+                    for i in order[:2] if dist[i] >= 0.15
+                ]
+                return " · ".join(bits)
+
             # Display Intent Analysis
             st.markdown("### Your Style Profile")
+            st.caption("Ranking matches the whole blend, not just the top label.")
             col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Occasion", intent["occasion"].title())
-            with col2:
-                st.metric("Formality", intent["formality"].title())
-            with col3:
-                st.metric("Constraint", intent["constraint"].title())
-            with col4:
-                st.metric("Color Tone", intent["color_tone"].title())
+            for c, axis, title in (
+                (col1, "occasion", "Occasion"),
+                (col2, "formality", "Formality"),
+                (col3, "constraint", "Constraint"),
+                (col4, "color_tone", "Color Tone"),
+            ):
+                with c:
+                    st.metric(title, intent[axis].replace("_", " ").title())
+                    st.caption(_blend_caption(axis))
 
             st.divider()
 
@@ -487,12 +478,12 @@ if st.button("🔍 Get Recommendations", use_container_width=True, type="primary
                         st.progress(min(max(product["match_score"], 0.0), 1.0))
                         st.markdown(f"`{product['match_score']:.1%}`", unsafe_allow_html=True)
                         
-                        # Detailed scores
-                        st.markdown("**Why this match?**")
+                        # Per-axis closeness to the requested profile (0-1)
+                        st.markdown("**Profile match by attribute**")
                         score_df = pd.DataFrame(
                             {
                                 "Attribute": ["Occasion", "Formality", "Constraint", "Color"],
-                                "Score": [
+                                "Closeness": [
                                     product["score_details"]["occasion"],
                                     product["score_details"]["formality"],
                                     product["score_details"]["constraint"],

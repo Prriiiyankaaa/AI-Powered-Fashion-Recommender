@@ -17,6 +17,8 @@ import torch.nn as nn
 from transformers import BertModel, BertTokenizer
 import chromadb
 
+import recommender_core as rc
+
 
 # ============================================================
 # CELL 2 — Config
@@ -111,7 +113,7 @@ bert_model, tokenizer = load_bert()
 # CELL 6 — Extract Intent
 # ============================================================
 
-def extract_intent(prompt, model, tokenizer):
+def extract_intent(prompt, model, tokenizer, temperature=rc.DEFAULT_TEMPERATURE):
     tokens = tokenizer(
         prompt,
         max_length=MAX_LEN,
@@ -126,10 +128,11 @@ def extract_intent(prompt, model, tokenizer):
     with torch.no_grad():
         outputs = model(input_ids, attention_mask)
 
-    occ_scores  = outputs["occasion"].softmax(dim=1).cpu().tolist()[0]
-    form_scores = outputs["formality"].softmax(dim=1).cpu().tolist()[0]
-    con_scores  = outputs["constraint"].softmax(dim=1).cpu().tolist()[0]
-    col_scores  = outputs["color"].softmax(dim=1).cpu().tolist()[0]
+    t = max(float(temperature), 1e-6)
+    occ_scores  = (outputs["occasion"]   / t).softmax(dim=1).cpu().tolist()[0]
+    form_scores = (outputs["formality"]  / t).softmax(dim=1).cpu().tolist()[0]
+    con_scores  = (outputs["constraint"] / t).softmax(dim=1).cpu().tolist()[0]
+    col_scores  = (outputs["color"]      / t).softmax(dim=1).cpu().tolist()[0]
 
     return {
         "occasion":   REVERSE_MAPS["occasion"][int(np.argmax(occ_scores))],
@@ -213,12 +216,10 @@ def query_chromadb(intent, prompt="", top_k=TOP_K * 3):
         print("ChromaDB is empty. Run catalog_pipeline.py first.")
         return []
 
-    # Include item type in query if mentioned in prompt
-    item_type  = detect_item_type(prompt)
-    if item_type:
-        query_text = f"{item_type} {intent['occasion']} {intent['formality']}"
-    else:
-        query_text = f"{intent['occasion']} {intent['formality']} {intent['constraint']} outfit"
+    # Query text = user's own words + weighted top labels (see recommender_core)
+    query_text = rc.build_query_text(
+        intent["scores"], REVERSE_MAPS, prompt, detect_item_type(prompt)
+    )
 
     print(f"ChromaDB query: '{query_text}'")
 
@@ -275,82 +276,20 @@ print("filter_by_item_type() defined.")
 
 
 
-# Score and Rank
+# Score and Rank — target-profile matching lives in recommender_core
 
+OCCASION_LABEL_MAP  = rc.OCCASION_LABEL_MAP
+FORMALITY_LABEL_MAP = rc.FORMALITY_LABEL_MAP
+BOLDNESS_LABEL_MAP  = rc.BOLDNESS_LABEL_MAP
+COLOR_LABEL_MAP     = rc.COLOR_LABEL_MAP
 
-# Exact BERT label → CLIP label string maps
-OCCASION_LABEL_MAP = {
-    "casual":  "casual everyday wear",
-    "party":   "party outfit",
-    "wedding": "wedding guest outfit",
-    "office":  "office wear",
-    "date":    "date night outfit",
-}
-
-FORMALITY_LABEL_MAP = {
-    "formal":      "very formal outfit",
-    "semi-formal": "semi formal outfit",
-    "casual":      "casual informal outfit",
-}
-
-BOLDNESS_LABEL_MAP = {
-    "understated":  "subtle and understated outfit",
-    "bold":         "bold and loud statement outfit",
-    "no_constraint": None,
-}
-
-COLOR_LABEL_MAP = {
-    "soft":    "soft muted pastel colors",
-    "bright":  "bright bold colors",
-    "dark":    "dark moody colors",
-    "neutral": "neutral minimal colors",
-}
 
 def score_product(product, intent):
-    score         = 0.0
-    score_details = {}
-
-    # Occasion
-    occ_label = OCCASION_LABEL_MAP.get(intent["occasion"], "")
-    occ_match = product["occasion_scores"].get(occ_label, 0.0)
-    occ_contrib               = occ_match * WEIGHTS["occasion"]
-    score                    += occ_contrib
-    score_details["occasion"] = round(occ_contrib, 3)
-
-    # Formality
-    form_label = FORMALITY_LABEL_MAP.get(intent["formality"], "")
-    form_match = product["formality_scores"].get(form_label, 0.0)
-    form_contrib               = form_match * WEIGHTS["formality"]
-    score                     += form_contrib
-    score_details["formality"] = round(form_contrib, 3)
-
-    # Constraint
-    con_label = BOLDNESS_LABEL_MAP.get(intent["constraint"])
-    if con_label is None:
-        con_match = 0.5  # no_constraint — neutral
-    else:
-        con_match = product["boldness_scores"].get(con_label, 0.0)
-    con_contrib                = con_match * WEIGHTS["constraint"]
-    score                     += con_contrib
-    score_details["constraint"] = round(con_contrib, 3)
-
-    # Color
-    col_label = COLOR_LABEL_MAP.get(intent["color_tone"], "")
-    col_match = product["color_scores"].get(col_label, 0.0)
-    col_contrib                = col_match * WEIGHTS["color_tone"]
-    score                     += col_contrib
-    score_details["color_tone"] = round(col_contrib, 3)
-
-    return round(score, 4), score_details
+    return rc.score_product(product, intent["scores"], REVERSE_MAPS)
 
 
 def rank_products(products, intent, top_k=TOP_K):
-    scored = []
-    for product in products:
-        score, details = score_product(product, intent)
-        scored.append({**product, "match_score": score, "score_details": details})
-    scored.sort(key=lambda x: x["match_score"], reverse=True)
-    return scored[:top_k]
+    return rc.rank_products(products, intent["scores"], REVERSE_MAPS, top_k=top_k)
 
 print("Scoring functions defined.")
 
@@ -392,8 +331,8 @@ def recommend(prompt, top_k=TOP_K):
     # Step 1 — Extract intent
     intent = extract_intent(prompt, bert_model, tokenizer)
 
-    # Step 2 — Query ChromaDB
-    candidates = query_chromadb(intent, prompt, top_k=top_k * 3)
+    # Step 2 — Query ChromaDB (wider pool so ranking/diversity has room to work)
+    candidates = query_chromadb(intent, prompt, top_k=max(top_k * 4, 20))
     if not candidates:
         print("No products found.")
         return []
