@@ -332,7 +332,7 @@ def recommend(prompt, top_k=TOP_K):
     intent = extract_intent(prompt, bert_model, tokenizer)
 
     # Step 2 — Query ChromaDB (wider pool so ranking/diversity has room to work)
-    candidates = query_chromadb(intent, prompt, top_k=max(top_k * 4, 20))
+    candidates = query_chromadb(intent, prompt, top_k=max(top_k * 10, 60))
     if not candidates:
         print("No products found.")
         return []

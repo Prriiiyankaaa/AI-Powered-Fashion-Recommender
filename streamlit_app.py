@@ -6,7 +6,11 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from transformers import BertConfig, BertModel, BertTokenizer
+from transformers import BertModel, BertTokenizer
+try:
+    from transformers import BertConfig
+except ImportError:  # some transformers builds don't re-export it at top level
+    from transformers.models.bert.configuration_bert import BertConfig
 import chromadb
 from chromadb.config import Settings
 from pathlib import Path
@@ -274,18 +278,27 @@ def detect_item_type(prompt):
 # ============================================================
 
 @st.cache_resource
-def get_chroma_collection():
-    client = chromadb.PersistentClient(
+def get_chroma_client():
+    return chromadb.PersistentClient(
         path=CHROMA_DIR,
         settings=Settings(anonymized_telemetry=False),
     )
-    return client.get_collection("fashion_products")
+
+
+def get_chroma_collection():
+    # Re-fetched each call (cheap) so the app survives an out-of-band collection
+    # rebuild — caching the Collection object leaves a stale UUID handle.
+    return get_chroma_client().get_collection("fashion_products")
 
 
 def query_chromadb(intent, prompt="", n_candidates=TOP_K * 4):
-    collection = get_chroma_collection()
-
-    total = collection.count()
+    try:
+        collection = get_chroma_collection()
+        total = collection.count()
+    except Exception:
+        get_chroma_client.clear()
+        collection = get_chroma_collection()
+        total = collection.count()
     if total == 0:
         return []
 
@@ -359,7 +372,7 @@ def rank_products(products, intent, top_k=TOP_K, alpha=rc.DEFAULT_ALPHA,
 def recommend(prompt, top_k=TOP_K, temperature=rc.DEFAULT_TEMPERATURE,
               alpha=rc.DEFAULT_ALPHA, mmr_lambda=rc.DEFAULT_MMR):
     intent = extract_intent(prompt, bert_model, tokenizer, temperature=temperature)
-    candidates = query_chromadb(intent, prompt, n_candidates=max(top_k * 4, 20))
+    candidates = query_chromadb(intent, prompt, n_candidates=max(top_k * 10, 60))
     if not candidates:
         return None, None
 
@@ -402,9 +415,30 @@ with st.sidebar:
 
 # Main input
 st.markdown("### Tell us about your style")
+
+# Curated example prompts — pick one to prefill, then edit freely or write your own.
+EXAMPLE_PROMPTS = [
+    ("Job interview",
+     "Final-round interview at a consulting firm — polished and confident, "
+     "understated, nothing flashy."),
+    ("Conference talk",
+     "Presenting at an industry conference, business formal with one subtle "
+     "statement piece."),
+    ("Weekend brunch",
+     "Sunday brunch with colleagues, smart-casual and put-together, relaxed."),
+]
+
+st.session_state.setdefault("user_prompt", "")
+st.caption("Pick a starting point, or write your own:")
+_ex_cols = st.columns(3)
+for _i, (_label, _text) in enumerate(EXAMPLE_PROMPTS):
+    if _ex_cols[_i % 3].button(_label, use_container_width=True, key=f"ex_{_i}"):
+        st.session_state["user_prompt"] = _text
+
 user_prompt = st.text_area(
     "What kind of outfit are you looking for?",
-    placeholder="e.g., Beach vacation with my girls, something fun and colorful",
+    key="user_prompt",
+    placeholder="e.g., Semi-formal dinner event, elegant but understated",
     height=100,
 )
 
