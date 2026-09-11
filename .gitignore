@@ -39,3 +39,6 @@ wheels/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Archived / superseded files (kept locally, out of the repo)
+archive/
