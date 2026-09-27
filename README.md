@@ -1,4 +1,6 @@
-# AI-Powered Fashion Recommender
+Live Demo: [Google](https://ai-powered-fashion-recommender.streamlit.app/)
+
+# AI-Powered Fashion Recommender 
 
 > *"birthday, party style but a little casual"*
 > → the system understands the blend, not just the loudest word in it.
