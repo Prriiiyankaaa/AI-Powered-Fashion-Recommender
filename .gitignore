@@ -42,3 +42,14 @@ wheels/
 
 # Archived / superseded files (kept locally, out of the repo)
 archive/
+
+# Intermediate ML-pipeline artifacts -- regenerable via build_dataset.py /
+# tag_catalog_rules.py, not needed to run or review the app itself
+fashion_data.csv
+fashion_data_v2.csv
+fashion_data_v2_heldout.csv
+
+# Superseded notebooks (scraper + the abandoned CLIP tagging approach --
+# tag_catalog_rules.py is the tagging pipeline actually in use)
+product.ipynb
+tag.ipynb
