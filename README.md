@@ -1,4 +1,4 @@
-Live Demo: [Google](https://ai-powered-fashion-recommender.streamlit.app/)
+Live Demo: [AI_Powered Fashion Recommender](https://ai-powered-fashion-recommender.streamlit.app/)
 
 # AI-Powered Fashion Recommender 
 
