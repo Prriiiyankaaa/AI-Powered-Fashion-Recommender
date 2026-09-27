@@ -31,6 +31,76 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# ------------------------------------------------------------------
+# Editorial dark theme (base colours come from .streamlit/config.toml;
+# this layers on typography, card, and button polish)
+# ------------------------------------------------------------------
+st.markdown(
+    """
+    <style>
+    :root {
+        --accent: #E8624A;
+        --accent-soft: rgba(232, 98, 74, 0.16);
+        --card-bg: #18181A;
+        --card-border: #2C2C30;
+        --text-muted: #A8A6A2;
+    }
+
+    h1, h2, h3 { letter-spacing: -0.01em; font-weight: 700; }
+    h1 { font-size: 2.15rem !important; }
+
+    hr { border-color: var(--card-border) !important; }
+
+    /* buttons */
+    .stButton > button {
+        border-radius: 8px;
+        border: 1px solid var(--card-border);
+        font-weight: 600;
+        transition: border-color 0.15s ease, color 0.15s ease;
+    }
+    .stButton > button:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+    }
+    .stButton > button[kind="primary"] {
+        border: none;
+        letter-spacing: 0.01em;
+    }
+
+    /* recommendation cards */
+    [data-testid="stVerticalBlockBorderWrapper"] {
+        background: var(--card-bg);
+        border: 1px solid var(--card-border) !important;
+        border-radius: 14px;
+        transition: border-color 0.15s ease;
+    }
+    [data-testid="stVerticalBlockBorderWrapper"]:hover {
+        border-color: var(--accent) !important;
+    }
+
+    /* sidebar */
+    [data-testid="stSidebar"] { border-right: 1px solid var(--card-border); }
+
+    /* metric labels (Style Profile) */
+    [data-testid="stMetricLabel"] {
+        color: var(--text-muted) !important;
+        text-transform: uppercase;
+        font-size: 0.72rem !important;
+        letter-spacing: 0.07em;
+    }
+
+    /* match-score chip */
+    code {
+        background: var(--accent-soft) !important;
+        color: var(--accent) !important;
+        border-radius: 6px;
+        font-weight: 700;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 # ============================================================
 # Config
 # ============================================================
@@ -386,8 +456,8 @@ def recommend(prompt, top_k=TOP_K, temperature=rc.DEFAULT_TEMPERATURE,
 # Streamlit UI
 # ============================================================
 
-st.title("AI- Powered Fashion Recommender")
-st.markdown("Find your perfect outfit based on your style, occasion, and preferences!")
+st.title("AI-Powered Fashion Recommender")
+st.caption("Find your perfect outfit based on your style, occasion, and preferences.")
 
 # Sidebar
 with st.sidebar:
@@ -505,7 +575,8 @@ if st.button("🔍 Get Recommendations", use_container_width=True, type="primary
                             st.markdown(f"**{product['title']}**")
                         
                         st.markdown(f"**Price:** {product['price']}")
-                        st.markdown(f"**Category:** {product['category']}")
+                        if product["category"]:
+                            st.markdown(f"**Category:** {product['category']}")
                         
                         # Match score with progress bar
                         st.markdown("**Match Score**")
@@ -533,8 +604,8 @@ if st.button("🔍 Get Recommendations", use_container_width=True, type="primary
 st.divider()
 st.markdown(
     """
-    <div style='text-align: center'>
-        <small>Fashion Recommender | Built with Streamlit, BERT, and ChromaDB</small>
+    <div style='text-align: center; color: #A8A6A2;'>
+        <small>Fashion Recommender · Built with Streamlit, BERT, and ChromaDB</small>
     </div>
     """,
     unsafe_allow_html=True,
